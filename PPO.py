@@ -8,7 +8,7 @@ class PPO:
     function. arXiv:1707.06347
     """
     def __init__(self, state_size, action_size, max_torque=1, hidden_nodes=64, actor_learning_rate=1e-4,
-                 critic_learning_rate=5e-3, epsilon=0.2, epochs=3, batchsize=64, gamma=0.99):
+                 critic_learning_rate=5e-3, epsilon=0.2, epochs=5, batchsize=64, gamma=0.99):
 
         self.max_torque = max_torque
         self.epochs = epochs
