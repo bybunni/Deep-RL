@@ -7,8 +7,8 @@ class PPO:
     """ A simplified single agent implementation of Proximal Policy Optimization with a clipped surrogate objective
     function. arXiv:1707.06347
     """
-    def __init__(self, state_size, action_size, max_torque=1, hidden_nodes=64, actor_learning_rate=2e-4,
-                 critic_learning_rate=5e-3, epsilon=0.2, epochs=1, batchsize=64, gamma=0.99):
+    def __init__(self, state_size, action_size, max_torque=1, hidden_nodes=64, actor_learning_rate=1e-4,
+                 critic_learning_rate=5e-3, epsilon=0.2, epochs=3, batchsize=64, gamma=0.99):
 
         self.max_torque = max_torque
         self.epochs = epochs
@@ -128,7 +128,7 @@ if __name__ == '__main__':
     action_size = env.action_space.shape[0]
     agent = PPO(state_size=state_size, action_size=action_size)
 
-    horizon = 64
+    horizon = 128
     episodes = 7500
     t = 0
     sT, aT, rT, dT = [], [], [], []
