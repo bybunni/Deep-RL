@@ -8,7 +8,7 @@ class PPO:
     function. arXiv:1707.06347
     """
     def __init__(self, state_size, action_size, max_torque=1, hidden_nodes=64, actor_learning_rate=1e-4,
-                 critic_learning_rate=5e-3, epsilon=0.2, epochs=5, batchsize=64, gamma=0.99):
+                 critic_learning_rate=25e-4, epsilon=0.2, entropy=0.01, epochs=5, batchsize=64, gamma=0.99):
 
         self.max_torque = max_torque
         self.epochs = epochs
@@ -82,6 +82,7 @@ class PPO:
         actor_loss = -tf.reduce_mean(tf.minimum(
             surrogate,
             tf.clip_by_value(probability_ratio, 1. - epsilon, 1. + epsilon) * self.advantage))  # Eq. 7
+        actor_loss += entropy * pi.entropy()  # Eq. 9
 
         self.actor_optimizer = tf.train.AdamOptimizer(actor_learning_rate).minimize(actor_loss)
 
