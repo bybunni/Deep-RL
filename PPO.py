@@ -1,6 +1,7 @@
 import numpy as np
 import tensorflow as tf
 import gym
+import time
 
 
 class PPO:
@@ -8,12 +9,13 @@ class PPO:
     function. arXiv:1707.06347
     """
     def __init__(self, state_size, action_size, max_torque=1, hidden_nodes=64, actor_learning_rate=1e-4,
-                 critic_learning_rate=25e-4, epsilon=0.2, entropy=0.01, epochs=5, batchsize=64, gamma=0.99):
+                 critic_learning_rate=25e-4, epsilon=0.2, entropy=0.01, epochs=5, batchsize=64, gamma=0.99, lam=0.95):
 
         self.max_torque = max_torque
         self.epochs = epochs
         self.batchsize = batchsize
         self.gamma = gamma
+        self.lam = lam
 
         self.sess = tf.Session()
         self.s = tf.placeholder(tf.float32, shape=[None, state_size], name='state')
@@ -36,27 +38,31 @@ class PPO:
         self.critic_optimizer = tf.train.AdamOptimizer(critic_learning_rate).minimize(critic_loss)
 
         # Actor
-        def build_actor(scope, hidden_nodes, action_size, trainable):
+        def build_actor(scope, hidden_nodes, action_size, trainable, discrete=False):
             with tf.variable_scope(scope):
                 hidden_layer = tf.layers.dense(inputs=self.s,
                                                units=hidden_nodes,
                                                activation=tf.nn.relu,
                                                trainable=trainable)
 
-                mu = self.max_torque * tf.layers.dense(inputs=hidden_layer,
-                                                       units=action_size,
-                                                       activation=tf.nn.tanh,
-                                                       trainable=trainable)
+                if discrete:
+                    logits = tf.layers.dense(hidden_layer, action_size, activation=None)
+                    dist = tf.distributions.Categorical(logits=logits)
+                else:
+                    mu = self.max_torque * tf.layers.dense(inputs=hidden_layer,
+                                                           units=action_size,
+                                                           activation=tf.nn.tanh,
+                                                           trainable=trainable)
 
-                sigma = tf.layers.dense(inputs=hidden_layer,
-                                        units=action_size,
-                                        activation=tf.nn.softplus,
-                                        trainable=trainable)
+                    sigma = tf.layers.dense(inputs=hidden_layer,
+                                            units=action_size,
+                                            activation=tf.nn.softplus,
+                                            trainable=trainable)
 
-                N = tf.distributions.Normal(loc=mu, scale=sigma)
+                    dist = tf.distributions.Normal(loc=mu, scale=sigma)
 
                 parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)
-                return N, parameters
+                return dist, parameters
 
         pi, pi_parameters = build_actor(scope='pi',
                                         hidden_nodes=hidden_nodes,
@@ -81,8 +87,8 @@ class PPO:
         # we maximize the objective function by minimizing its negation
         actor_loss = -tf.reduce_mean(tf.minimum(
             surrogate,
-            tf.clip_by_value(probability_ratio, 1. - epsilon, 1. + epsilon) * self.advantage))  # Eq. 7
-        actor_loss += entropy * pi.entropy()  # Eq. 9
+            tf.clip_by_value(probability_ratio, 1. - epsilon, 1. + epsilon) * self.advantage) + entropy * pi.entropy())  # Eq. 7
+        # actor_loss += entropy * pi.entropy()  # Eq. 9
 
         self.actor_optimizer = tf.train.AdamOptimizer(actor_learning_rate).minimize(actor_loss)
 
@@ -102,23 +108,40 @@ class PPO:
 
     def act(self, s):
         s = s[np.newaxis, :]
+        # a = tf.one_hot(self.sess.run(self.sample_pi, feed_dict={self.s: s}).ravel(), 4)
+        # return self.sample_pi()
         a = self.sess.run(self.sample_pi, feed_dict={self.s: s}).ravel()
         return np.clip(a, -self.max_torque, self.max_torque)
 
-    def get_discounted_reward(self, sT, rT, dT):
+    def get_discounted_reward(self, sT, rT, dT, s_, get_gae=True):
+        sT.append(s_)  # we use the T+1 state to compute the target for the Tth state in the rollout
+        dT.append(False)  # assume T+1 is non-terminal
         state_valuesT = self.sess.run(self.v, feed_dict={self.s: sT})
+        sT.pop()
 
-        discounted_rewardT = np.zeros_like(rT)
-        for t in reversed(range(len(rT))):
-            if t == len(rT) - 1:
-                discounted_rewardT[t] = rT[t] + self.gamma * state_valuesT[t] * (1 - dT[t])
-            else:
-                discounted_rewardT[t] = rT[t] + self.gamma * discounted_rewardT[t+1] * (1 - dT[t])
+        if get_gae:
+            gaeT = np.zeros_like(rT)
+            gae = 0
+            for t in reversed(range(len(rT))):
+                    delta = rT[t] + self.gamma * state_valuesT[t + 1] * (1 - dT[t + 1]) - state_valuesT[t]
+                    gae = delta + self.gamma * self.lam * (1 - dT[t + 1]) * gae
+                    gaeT[t] = gae + state_valuesT[t]
 
-        return discounted_rewardT, state_valuesT
+            return gaeT, state_valuesT[:-1]
+
+        else:
+            discounted_rewardT = np.zeros_like(rT)
+            for t in reversed(range(len(rT))):
+                if t == len(rT) - 1:
+                    discounted_rewardT[t] = rT[t] + self.gamma * state_valuesT[t] * (1 - dT[t])
+                else:
+                    discounted_rewardT[t] = rT[t] + self.gamma * discounted_rewardT[t + 1] * (1 - dT[t])
+
+            return discounted_rewardT, state_valuesT[:-1]
 
 
 if __name__ == '__main__':
+    start = time.time()
     env_name = 'LunarLanderContinuous-v2'
     env = gym.make(env_name)
     env.seed(42)
@@ -138,6 +161,7 @@ if __name__ == '__main__':
     for episode in range(episodes):
         if solved:
             print('Solved. 100 Episode Moving Average Reward of {}'.format(np.mean(episode_rewards[-100:])))
+            print(time.time() - start)
             break
         episode_reward = 0
         done = False
@@ -146,7 +170,7 @@ if __name__ == '__main__':
             t += 1
             a = agent.act(s)
 
-            s_, r, done, _ = env.step(a)
+            s_, r, done, _ = env.step(a)  # np.argmax(a))
 
             sT.append(s)
             aT.append(a)
@@ -158,7 +182,7 @@ if __name__ == '__main__':
             episode_reward += r
 
             if t % horizon == 0:
-                discounted_rewardT, state_valuesT = agent.get_discounted_reward(sT, rT, dT)
+                discounted_rewardT, state_valuesT = agent.get_discounted_reward(sT, rT, dT, s_)
                 sT, aT, discounted_rewardT, state_valuesT = \
                     np.vstack(sT), np.vstack(aT), np.vstack(discounted_rewardT), np.vstack(state_valuesT)
                 agent.update(sT, aT, discounted_rewardT, state_valuesT)
