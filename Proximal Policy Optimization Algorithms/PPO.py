@@ -5,26 +5,27 @@ import time
 
 
 class PPO:
-    """ A simplified single agent actor/critic implementation of Proximal Policy Optimization with a clipped surrogate
-    objective function and Generalized Advantage Estimation. arXiv:1707.06347 arXiv:1506.02438
+    """ Single agent implementation of Proximal Policy Optimization with a clipped surrogate objective function,
+    Generalized Advantage Estimation, and no shared parameters between the policy (actor) and value function (critic).
+    arXiv:1707.06347 arXiv:1506.02438
     """
-    def __init__(self, state_size, action_size, max_torque=1, hidden_nodes=64, actor_learning_rate=1e-4,
-                 critic_learning_rate=25e-4, epsilon=0.2, entropy=0.01, epochs=5, batchsize=64, gamma=0.99, lam=0.95):
+    def __init__(self, state_size, action_size, max_torque=1, hidden_layers=2, nodes=64, actor_learning_rate=1e-4,
+                 critic_learning_rate=1e-3, epsilon=0.1, c2=0.01, epochs=5, batchsize=64, gamma=0.99, lam=0.95):
         """ Initialization and training parameters for our PPO actor/critic agent. Default values from arXiv:1707.06347
             for continuous control problems.
 
         Args:
-            state_size (int): The environment state size.
-            action_size (int): The environment action size.
-            max_torque (float): The min/max torque values ie. action values accepted by the environment.
-            hidden_nodes (int): Number of hidden nodes in the single hidden layer actor policy network and in each
-                hidden layer of the double hidden layer critic network.
+            state_size (int): The number of features in the environment state.
+            action_size (int): The number of actions in the environment.
+            max_torque (float): The [-max_torque, max_torque] accepted as a valid action by the environment.
+            hidden_layers (int): The number of hidden layers for the actor (poilcy) and critic (value) networks.
+            nodes (int): The number of nodes in each hidden layer.
             actor_learning_rate (float): Actor Adam optimizer learning rate.
             critic_learning_rate (float): Critic Adam optimizer learning rate.
             epsilon (float): The probability ratio clipping parameter.
-            entropy (float): The entropy added to the actor policy loss.
-            epochs (int): The number of training epochs per agent update call.
-            batchsize (int): The size of the minibatches sampled from the provided rollout.
+            c2 (float): The coefficient for the entropy added to the actor policy loss.
+            epochs (int): The number of training epochs per agent update.
+            batchsize (int): The size of the minibatches sampled from the rollout.
             gamma (float): The gamma discount value.
             lam (float): The lambda discount used in GAE computation of TD(Lambda) return.
         """
@@ -36,67 +37,76 @@ class PPO:
         self.lam = lam
 
         self.sess = tf.Session()
-        self.s = tf.placeholder(tf.float32, shape=[None, state_size], name='state')
 
-        critic_hidden_layer = tf.layers.dense(inputs=self.s,
-                                              units=hidden_nodes,
-                                              activation=tf.nn.relu)
-
-        critic_hidden_layer_2 = tf.layers.dense(inputs=critic_hidden_layer,
-                                                units=hidden_nodes,
-                                                activation=tf.nn.relu)
-
-        self.v = tf.layers.dense(inputs=critic_hidden_layer_2,
-                                 units=1,
-                                 activation=None)  # None is a linear activation
-
-        self.discounted_returns = tf.placeholder(tf.float32, shape=[None, 1], name='discounted_returns')
-        critic_loss = tf.reduce_mean(tf.square(self.discounted_returns - self.v))
-        self.critic_optimizer = tf.train.AdamOptimizer(critic_learning_rate).minimize(critic_loss)
-
-        def build_actor(scope, hidden_nodes, action_size, trainable):
-            """ Builds our policy network of a single hidden layer.
+        def build_actor_critic(action_size, hidden_shape=(hidden_layers, nodes)):
+            """
 
             Args:
-                scope (str): Name for this actor's scope.
-                hidden_nodes (int): Number of nodes in the hidden layer.
-                action_size (int): Number of actions in the environment. Dictates the size of our output layer.
-                trainable (bool): Whether or not this network will have trainable weights.
+                action_size: The number of actions in the environment.
+                hidden_shape: (number of hidden layers, number of nodes per hidden layer)
 
             Returns:
-                dist: A Normal distribution parameterized by learned mu and sigma of dimension action_size.
-                parameters: The weights of this actor.
+                pi_dist: A Normal distribution actor policy parameterized by learned mu and sigma of dimension action_size.
+                pi_parameters: The weights of this actor.
+                pi_old_dist: An untrainable copy of our actor to store our old policy.
+                pi_old_parameters: The weights of this untrainable actor.
+                v: Our value function output.
             """
-            with tf.variable_scope(scope):
-                hidden_layer = tf.layers.dense(inputs=self.s,
-                                               units=hidden_nodes,
-                                               activation=tf.nn.relu,
-                                               trainable=trainable)
+            def build_hidden_layers(hidden_shape, input):
+                number_of_hidden_layers, number_of_nodes = hidden_shape
+                last_out = input
+                for _ in range(number_of_hidden_layers):
+                    last_out = tf.layers.dense(inputs=last_out,
+                                               units=number_of_nodes,
+                                               activation=tf.nn.relu)
+                return last_out
 
-                mu = self.max_torque * tf.layers.dense(inputs=hidden_layer,
+            with tf.variable_scope('value'):
+                last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
+
+                v = tf.layers.dense(inputs=last_hidden_layer,
+                                    units=1,
+                                    activation=None)  # None is a linear activation
+
+            with tf.variable_scope('pi'):
+                last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
+
+                mu = self.max_torque * tf.layers.dense(inputs=last_hidden_layer,
                                                        units=action_size,
                                                        activation=tf.nn.tanh,
-                                                       trainable=trainable)
+                                                       trainable=True)
 
-                sigma = tf.layers.dense(inputs=hidden_layer,
+                sigma = tf.layers.dense(inputs=last_hidden_layer,
                                         units=action_size,
                                         activation=tf.nn.softplus,
-                                        trainable=trainable)
-
-                dist = tf.distributions.Normal(loc=mu, scale=sigma)
-
-                parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)
-                return dist, parameters
-
-        pi, pi_parameters = build_actor(scope='pi',
-                                        hidden_nodes=hidden_nodes,
-                                        action_size=action_size,
                                         trainable=True)
 
-        pi_old, pi_old_parameters = build_actor(scope='pi_old',
-                                                hidden_nodes=hidden_nodes,
-                                                action_size=action_size,
-                                                trainable=False)
+                pi_dist = tf.distributions.Normal(loc=mu, scale=sigma)
+
+            with tf.variable_scope('pi_old'):
+                last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
+
+                mu = self.max_torque * tf.layers.dense(inputs=last_hidden_layer,
+                                                       units=action_size,
+                                                       activation=tf.nn.tanh,
+                                                       trainable=False)
+
+                sigma = tf.layers.dense(inputs=last_hidden_layer,
+                                        units=action_size,
+                                        activation=tf.nn.softplus,
+                                        trainable=False)
+
+                pi_old_dist = tf.distributions.Normal(loc=mu, scale=sigma)
+
+            pi_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='pi')
+            pi_old_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='pi_old')
+
+            return pi_dist, pi_parameters, pi_old_dist, pi_old_parameters, v
+
+        self.s = tf.placeholder(tf.float32, shape=[None, state_size], name='state')
+        self.v_target = tf.placeholder(tf.float32, shape=[None, 1], name='v_target')
+
+        pi, pi_parameters, pi_old, pi_old_parameters, self.v = build_actor_critic(action_size=action_size)
 
         self.sample_pi = pi.sample(1)
         self.update_pi_old = [pi_old_parameter.assign(pi_parameter) for pi_parameter, pi_old_parameter
@@ -107,25 +117,25 @@ class PPO:
 
         # log space to prevent underflow ln(a/b) = ln(a) - ln(b)
         probability_ratio = tf.exp(pi.log_prob(self.a) - pi_old.log_prob(self.a))
-        surrogate = probability_ratio * self.advantage  # arXiv:1707.06347 Eq. 6
-        # we maximize the objective function by minimizing its negation
-        actor_loss = -tf.reduce_mean(tf.minimum(
-            surrogate,
-            tf.clip_by_value(probability_ratio, 1. - epsilon, 1. + epsilon) * self.advantage)
-                                     + entropy * pi.entropy())  # arXiv:1707.06347 Eq. 9
-
-        self.actor_optimizer = tf.train.AdamOptimizer(actor_learning_rate).minimize(actor_loss)
-
+        # arXiv:1707.06347 Eq. 6
+        surrogate = probability_ratio * self.advantage
+        # we maximize the objective function by minimizing its negation arXiv:1707.06347 Eq. 7
+        actor_loss = -tf.reduce_mean(
+            tf.minimum(surrogate, tf.clip_by_value(probability_ratio, 1. - epsilon, 1. + epsilon) * self.advantage))
+        entropy = c2 * tf.reduce_mean(pi.entropy())
+        self.actor_optimizer = tf.train.AdamOptimizer(actor_learning_rate).minimize(actor_loss - entropy)
+        critic_loss = tf.reduce_mean(tf.square(self.v_target - self.v))
+        self.critic_optimizer = tf.train.AdamOptimizer(critic_learning_rate).minimize(critic_loss)
         self.sess.run(tf.global_variables_initializer())
 
-    def update(self, s, a, discounted_returns, state_values):
+    def update(self, s, a, v_targets, state_values):
         """ Given a rollout of states, actions, discounted returns and state values perform an update of the actor
         policy and critic networks given the minibatch size and epochs provided at initialization.
 
         Args:
             s (ndarray): A rollout of states.
             a (ndarray): A rollout of actions taken.
-            discounted_returns (ndarray): The calculated discounted returns.
+            v_targets (ndarray): The calculated discounted returns.
             state_values (ndarray): The state values currently estimated by the critic.
 
         Returns:
@@ -133,12 +143,12 @@ class PPO:
         """
         for _ in range(self.epochs):
             minibatch_indices = np.random.choice(s.shape[0], size=self.batchsize, replace=False)
-            advantages = discounted_returns[minibatch_indices] - state_values[minibatch_indices]
+            advantages = v_targets[minibatch_indices] - state_values[minibatch_indices]
             self.sess.run(self.actor_optimizer, feed_dict={self.s: s[minibatch_indices],
                                                            self.a: a[minibatch_indices],
                                                            self.advantage: advantages})
             self.sess.run(self.critic_optimizer, feed_dict={self.s: s[minibatch_indices],
-                                                            self.discounted_returns: discounted_returns[minibatch_indices]})
+                                                            self.v_target: v_targets[minibatch_indices]})
         self.sess.run(self.update_pi_old)
 
     def act(self, s):
