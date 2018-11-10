@@ -4,6 +4,3 @@ Advantage Estimation, and no shared parameters between the policy (actor) and va
 Python 3 and TensorFlow. 
 [arXiv:1707.06347](https://arxiv.org/abs/1707.06347) 
 [arXiv:1506.02438](https://arxiv.org/abs/1506.02438)
-
-Inspired by the implementations published by 
-[MorvanZhou](https://github.com/MorvanZhou/Reinforcement-learning-with-tensorflow).
