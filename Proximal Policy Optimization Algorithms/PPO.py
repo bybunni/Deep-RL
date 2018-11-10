@@ -61,32 +61,42 @@ class PPO:
                                                activation=tf.nn.relu)
                 return last_out
 
-            def build_policy_head(scope, last_hidden_layer, trainable):
-                with tf.variable_scope(scope):
-                    mu = self.max_torque * tf.layers.dense(inputs=last_hidden_layer,
-                                                           units=action_size,
-                                                           activation=tf.nn.tanh,
-                                                           trainable=trainable)
+            with tf.variable_scope('value'):
+                last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
 
-                    sigma = tf.layers.dense(inputs=last_hidden_layer,
-                                            units=action_size,
-                                            activation=tf.nn.softplus,
-                                            trainable=trainable)
+                v = tf.layers.dense(inputs=last_hidden_layer,
+                                    units=1,
+                                    activation=None)  # None is a linear activation
 
-                    pi_dist = tf.distributions.Normal(loc=mu, scale=sigma)
+            with tf.variable_scope('pi'):
+                last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
 
-                return pi_dist
+                mu = self.max_torque * tf.layers.dense(inputs=last_hidden_layer,
+                                                       units=action_size,
+                                                       activation=tf.nn.tanh,
+                                                       trainable=True)
 
-            last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
-            v = tf.layers.dense(inputs=last_hidden_layer,
-                                units=1,
-                                activation=None)  # None is a linear activation
+                sigma = tf.layers.dense(inputs=last_hidden_layer,
+                                        units=action_size,
+                                        activation=tf.nn.softplus,
+                                        trainable=True)
 
-            last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
-            pi_dist = build_policy_head('pi', last_hidden_layer, True)
+                pi_dist = tf.distributions.Normal(loc=mu, scale=sigma)
 
-            last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
-            pi_old_dist = build_policy_head('pi_old', last_hidden_layer, False)
+            with tf.variable_scope('pi_old'):
+                last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
+
+                mu = self.max_torque * tf.layers.dense(inputs=last_hidden_layer,
+                                                       units=action_size,
+                                                       activation=tf.nn.tanh,
+                                                       trainable=False)
+
+                sigma = tf.layers.dense(inputs=last_hidden_layer,
+                                        units=action_size,
+                                        activation=tf.nn.softplus,
+                                        trainable=False)
+
+                pi_old_dist = tf.distributions.Normal(loc=mu, scale=sigma)
 
             pi_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='pi')
             pi_old_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='pi_old')
