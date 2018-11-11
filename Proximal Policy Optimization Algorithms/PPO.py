@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 import gym
 import time
+from collections import deque
 
 
 class PPO:
@@ -10,7 +11,8 @@ class PPO:
     arXiv:1707.06347 arXiv:1506.02438
     """
     def __init__(self, state_size, action_size, max_torque=1, hidden_layers=2, nodes=64, actor_learning_rate=1e-4,
-                 critic_learning_rate=1e-3, epsilon=0.1, c2=0.01, epochs=5, batchsize=64, gamma=0.99, lam=0.95):
+                 critic_learning_rate=1e-3, epsilon=0.1, c2=0.01, epochs=5, batchsize=64, gamma=0.99, lam=0.95,
+                 horizon=128):
         """ Initialization and training parameters for our PPO actor/critic agent. Default values from arXiv:1707.06347
             for continuous control problems.
 
@@ -35,6 +37,8 @@ class PPO:
         self.batchsize = batchsize
         self.gamma = gamma
         self.lam = lam
+        self.horizon = horizon
+        self.memory = deque(maxlen=horizon)
 
         self.sess = tf.Session()
 
@@ -129,6 +133,7 @@ class PPO:
         Returns:
             None
         """
+        # print(s.shape, a.shape, v_targets.shape, state_values.shape)
         for _ in range(self.epochs):
             minibatch_indices = np.random.choice(s.shape[0], size=self.batchsize, replace=False)
             advantages = v_targets[minibatch_indices] - state_values[minibatch_indices]
@@ -152,25 +157,30 @@ class PPO:
         a = self.sess.run(self.sample_pi, feed_dict={self.s: s}).ravel()
         return np.clip(a, -self.max_torque, self.max_torque)
 
-    def get_discounted_returns(self, sT, rT, dT, s_, use_gae=True):
-        """ Compute either the discounted reward or GAE arXiv:1506.02438 given a rollout of states, rewards, dones and
-        the T+1 state.
+    def get_discounted_returns(self, use_gae=True):
+        """ Compute either the discounted reward or GAE arXiv:1506.02438 given the rollout of states, rewards, dones and
+        the T+1 state in memory.
 
         Args:
-            sT (list): A rollout of states.
-            rT (list): A rollout of rewards.
-            dT (list): A rollout of dones signifying whether a state is terminal or not.
-            s_ (ndarray): The T+1 state.
             use_gae (bool): Whether to return GAE or discounted rewards.
 
         Returns:
+            state_batch (ndarray): The states of the rollout.
+            action_batch (ndarray): The actions of the rollout.
             discounted_returnsT (ndarray): The computed returns for the rollout.
-            state_valuesT[:-1]: The current estimate of the state values excluding the T+1 state.
+            state_valuesT[:-1] (ndarray): The current estimate of the state values excluding the T+1 state.
         """
-        sT.append(s_)  # we use the T+1 state to compute the target for the Tth state in the rollout
-        dT.append(False)  # assume T+1 is non-terminal
+        memory = np.array(self.memory)
+        state_batch = np.vstack(memory[:, 0])
+        action_batch = np.vstack(memory[:, 1])
+        rT = np.vstack(memory[:, 2]).flatten()
+        next_state_batch = np.vstack(memory[:, 3])
+        # we use the T+1 state to compute the target for the Tth state in the rollout
+        sT = np.vstack((np.vstack(state_batch), next_state_batch[-1]))
+        # assume T+1 is non-terminal
+        dT = np.vstack((np.vstack(memory[:, 4]).astype(bool), [False])).flatten()
+
         state_valuesT = self.sess.run(self.v, feed_dict={self.s: sT})
-        sT.pop()
 
         if use_gae:
             gaeT = np.zeros_like(rT)
@@ -179,17 +189,31 @@ class PPO:
                 delta = rT[t] + self.gamma * state_valuesT[t + 1] * (1 - dT[t + 1]) - state_valuesT[t]
                 gae = delta + self.gamma * self.lam * (1 - dT[t + 1]) * gae
                 gaeT[t] = gae + state_valuesT[t]  # gae + state values is equivalent to a TD(Lambda) advantage estimate
-            discounted_returnsT = gaeT
+            discounted_returnsT = gaeT[:, np.newaxis]
         else:
             discounted_rewardT = np.zeros_like(rT)
+            dr = state_valuesT[-1]
             for t in reversed(range(len(rT))):
-                if t == len(rT) - 1:
-                    discounted_rewardT[t] = rT[t] + self.gamma * state_valuesT[t + 1] * (1 - dT[t + 1])
-                else:
-                    discounted_rewardT[t] = rT[t] + self.gamma * discounted_rewardT[t + 1] * (1 - dT[t])
-            discounted_returnsT = discounted_rewardT
+                discounted_rewardT[t] = dr = rT[t] + self.gamma * dr * (1 - dT[t])
+            discounted_returnsT = discounted_rewardT[:, np.newaxis]
 
-        return discounted_returnsT, state_valuesT[:-1]
+        return state_batch, action_batch, discounted_returnsT, state_valuesT[:-1]
+
+    def store_and_learn(self, experience):
+        """ Store the provided experience tuple in memory. Once a rollout of length horizon has been collected compute
+        the discounted returns, perform an update to the actor and critic, and clear the memory.
+
+        Args:
+            experience: A tuple of (state, action, reward, next state, terminal)
+
+        Returns:
+            None
+        """
+        self.memory.append(experience)
+        if len(self.memory) == self.horizon:
+            states, actions, discounted_returns, state_values = self.get_discounted_returns(use_gae=True)
+            self.update(states, actions, discounted_returns, state_values)
+            self.memory.clear()
 
 
 if __name__ == '__main__':
@@ -209,7 +233,6 @@ if __name__ == '__main__':
     horizon = 128
     episodes = 7500
     t = 0
-    sT, aT, rT, dT = [], [], [], []
     episode_rewards = []
     solved = False
     for episode in range(episodes):
@@ -225,21 +248,11 @@ if __name__ == '__main__':
             a = agent.act(s)
             s_, r, done, _ = env.step(a)
 
-            sT.append(s)
-            aT.append(a)
-            rT.append(r)
-            dT.append(done)
+            agent.store_and_learn((s, a, r, s_, done))
 
             s = s_
 
             episode_reward += r
-
-            if t % horizon == 0:
-                discounted_returnsT, state_valuesT = agent.get_discounted_returns(sT, rT, dT, s_, use_gae=True)
-                sT, aT, discounted_returnsT, state_valuesT = \
-                    np.vstack(sT), np.vstack(aT), np.vstack(discounted_returnsT), np.vstack(state_valuesT)
-                agent.update(sT, aT, discounted_returnsT, state_valuesT)
-                sT, aT, rT, dT = [], [], [], []
 
             if done:
                 episode_rewards.append(episode_reward)
