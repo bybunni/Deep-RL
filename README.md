@@ -1,4 +1,4 @@
-# Deep Reinforcement Learning Paper Replications
+# Deep Reinforcement Learning Algorithm Implementations
 Python implementations of Deep Reinforcement Learning algorithms in Python and Tensorflow with an 
 emphasis on readability.
 
