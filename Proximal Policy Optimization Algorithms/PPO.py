@@ -133,7 +133,6 @@ class PPO:
         Returns:
             None
         """
-        # print(s.shape, a.shape, v_targets.shape, state_values.shape)
         for _ in range(self.epochs):
             minibatch_indices = np.random.choice(s.shape[0], size=self.batchsize, replace=False)
             advantages = v_targets[minibatch_indices] - state_values[minibatch_indices]
