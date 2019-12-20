@@ -11,7 +11,7 @@ class PPO:
     arXiv:1707.06347 arXiv:1506.02438
     """
     def __init__(self, state_size, action_size, max_torque=1, hidden_layers=2, nodes=64, actor_learning_rate=1e-4,
-                 critic_learning_rate=1e-3, epsilon=0.1, c2=0.01, epochs=5, batchsize=64, gamma=0.99, lam=0.95,
+                 critic_learning_rate=1e-3, epsilon=0.2, c2=0.01, epochs=5, batchsize=64, gamma=0.99, lam=0.95,
                  horizon=128):
         """ Initialization and training parameters for our PPO actor/critic agent. Default values from arXiv:1707.06347
             for continuous control problems.
@@ -80,25 +80,25 @@ class PPO:
 
                     pi_dist = tf.distributions.Normal(loc=mu, scale=sigma)
 
-                return pi_dist
+                return pi_dist, mu, sigma
 
             last_hidden_layer = build_hidden_layers(hidden_shape, self.s)
             v = tf.layers.dense(inputs=last_hidden_layer,
                                 units=1,
                                 activation=None)  # None is a linear activation
 
-            pi_dist = build_actor('pi', hidden_shape=hidden_shape, trainable=True)
-            pi_old_dist = build_actor('pi_old', hidden_shape=hidden_shape, trainable=False)
+            pi_dist, pi_mu, pi_sigma = build_actor('pi', hidden_shape=hidden_shape, trainable=True)
+            pi_old_dist, pi_old_mu, pi_old_sigma = build_actor('pi_old', hidden_shape=hidden_shape, trainable=False)
 
             pi_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='pi')
             pi_old_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='pi_old')
 
-            return pi_dist, pi_parameters, pi_old_dist, pi_old_parameters, v
+            return pi_dist, pi_parameters, pi_old_dist, pi_old_parameters, v, pi_mu, pi_sigma
 
         self.s = tf.placeholder(tf.float32, shape=[None, state_size], name='state')
         self.v_target = tf.placeholder(tf.float32, shape=[None, 1], name='v_target')
 
-        pi, pi_parameters, pi_old, pi_old_parameters, self.v = build_actor_critic(action_size=action_size)
+        pi, pi_parameters, pi_old, pi_old_parameters, self.v, self.mu, self.sigma = build_actor_critic(action_size=action_size)
 
         self.sample_pi = pi.sample(1)
         self.update_pi_old = [pi_old_parameter.assign(pi_parameter) for pi_parameter, pi_old_parameter
@@ -114,7 +114,8 @@ class PPO:
         # we maximize the objective function by minimizing its negation arXiv:1707.06347 Eq. 7
         actor_loss = -tf.reduce_mean(
             tf.minimum(surrogate, tf.clip_by_value(probability_ratio, 1. - epsilon, 1. + epsilon) * self.advantage))
-        entropy = c2 * tf.reduce_mean(pi.entropy())
+        this_dist = tf.distributions.Normal(loc=self.mu, scale=self.sigma)
+        entropy = c2 * tf.reduce_mean(this_dist.entropy())
         self.actor_optimizer = tf.train.AdamOptimizer(actor_learning_rate).minimize(actor_loss - entropy)
         critic_loss = tf.reduce_mean(tf.square(self.v_target - self.v))
         self.critic_optimizer = tf.train.AdamOptimizer(critic_learning_rate).minimize(critic_loss)
