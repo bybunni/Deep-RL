@@ -114,8 +114,7 @@ class PPO:
         # we maximize the objective function by minimizing its negation arXiv:1707.06347 Eq. 7
         actor_loss = -tf.reduce_mean(
             tf.minimum(surrogate, tf.clip_by_value(probability_ratio, 1. - epsilon, 1. + epsilon) * self.advantage))
-        this_dist = tf.distributions.Normal(loc=self.mu, scale=self.sigma)
-        entropy = c2 * tf.reduce_mean(this_dist.entropy())
+        entropy = c2 * tf.reduce_mean(pi.entropy())
         self.actor_optimizer = tf.train.AdamOptimizer(actor_learning_rate).minimize(actor_loss - entropy)
         critic_loss = tf.reduce_mean(tf.square(self.v_target - self.v))
         self.critic_optimizer = tf.train.AdamOptimizer(critic_learning_rate).minimize(critic_loss)
